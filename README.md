@@ -76,6 +76,42 @@ STALE: the override pins 4.6.13 but UISP now holds 4.6.16
 If Ubiquiti's new image already contains a fixed PHP, `install` says so and does
 nothing. Use `remove` to tidy up.
 
+## UISP's own tooling bypasses this patch — on purpose
+
+`unms-cli` and the UISP updater invoke Compose as:
+
+```bash
+docker compose -p unms -f /home/unms/app/docker-compose.yml ...
+```
+
+Passing `-f` explicitly **disables Compose's automatic discovery of
+`docker-compose.override.yml`** — the file this tool writes to. Nothing in
+`unms-cli` references that file at all.
+
+The practical effect: **`unms-cli restart|start|stop` runs UISP on Ubiquiti's
+stock image**, not the patched one, until something invokes bare `docker compose`
+again (which `php2shell.sh install` does).
+
+That is the behaviour we want, and the reason this tool writes to the override
+file rather than editing `docker-compose.yml`:
+
+- The patch **steps aside automatically** once Ubiquiti ships a fixed image.
+  There is no leftover customisation quietly shadowing a newer, better release.
+- `docker-compose.yml` is **regenerated from a template on every UISP update**,
+  so anything written there is lost anyway — and it is upstream's file.
+
+The catch is that it steps aside on **any** `unms-cli` restart, not only after a
+fixing update. So after one, UISP may be back on stock PHP without saying so.
+That is exactly what `status` is for, and why it exits non-zero:
+
+```
+container running : ubnt/unms-crm:4.6.13
+PHP in container  : 8.3.32
+VULNERABLE: PHP 8.3.32 < 8.3.36
+```
+
+Run `install` again and you are patched; it is safe to re-run at any time.
+
 ## PHP 8.1 and older cannot be fixed by this tool
 
 For this CVE the PHP project published a fixed **release** only for 8.2, 8.3,
