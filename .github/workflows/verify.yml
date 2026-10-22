@@ -1,0 +1,131 @@
+name: verify
+
+# DELIBERATELY manual-only for now.
+#
+# Each matrix entry compiles PHP from source inside the UISP image, which takes
+# several minutes and ~2GB of runner disk. Running that on every push would make
+# iteration painful for no benefit -- the thing this guards against is UBIQUITI
+# changing their image, not us changing a shell script.
+#
+# Enable `schedule` once the tool settles: a weekly run is what would catch a new
+# unms-crm release that drops an extension or moves PHP minor, BEFORE a user hits
+# it. Enable `push` only if the Dockerfile starts changing often.
+on:
+  workflow_dispatch:
+    inputs:
+      uisp_versions:
+        description: 'Space-separated unms-crm tags to verify'
+        required: false
+        default: '4.6.13 4.6.15'
+
+# schedule:
+#   - cron: '0 6 * * 1'     # Mondays — catch new UISP releases
+# push:
+#   paths: [ 'Dockerfile' ]
+
+permissions:
+  contents: read
+
+jobs:
+  matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      versions: ${{ steps.build.outputs.versions }}
+    steps:
+      - id: build
+        run: |
+          set -euo pipefail
+          read -ra V <<< "${{ inputs.uisp_versions || '4.6.13 4.6.15' }}"
+          printf 'versions=%s\n' "$(printf '%s\n' "${V[@]}" | jq -R . | jq -sc .)" >> "$GITHUB_OUTPUT"
+
+  verify:
+    needs: matrix
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        uisp: ${{ fromJSON(needs.matrix.outputs.versions) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Runners ship ~14GB free; the stock image is ~900MB and the patched one
+      # ~970MB. Reclaiming the preinstalled toolchains avoids a late ENOSPC in
+      # the middle of a five-minute compile.
+      - name: Reclaim disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc || true
+          df -h / | tail -1
+
+      - name: Read what UISP ships
+        id: stock
+        run: |
+          set -euo pipefail
+          IMAGE="ubnt/unms-crm:${{ matrix.uisp }}"
+          docker pull -q "$IMAGE"
+          PHP_FULL="$(docker run --rm --entrypoint php "$IMAGE" -r 'echo PHP_VERSION;')"
+          echo "stock_php=$PHP_FULL"            >> "$GITHUB_OUTPUT"
+          echo "minor=${PHP_FULL%.*}"           >> "$GITHUB_OUTPUT"
+          docker run --rm --entrypoint php "$IMAGE" -m | sort > stock-modules.txt
+          echo "::notice::${{ matrix.uisp }} ships PHP $PHP_FULL"
+
+      # The same floor table php2shell.sh enforces. Kept in step with it by the
+      # assertion below -- if they ever disagree, this job fails rather than
+      # verifying something the tool would refuse to do.
+      - name: Resolve the patched release
+        id: target
+        run: |
+          set -euo pipefail
+          MINOR="${{ steps.stock.outputs.minor }}"
+          case "$MINOR" in
+            8.2) FLOOR=8.2.35 ;; 8.3) FLOOR=8.3.36 ;;
+            8.4) FLOOR=8.4.27 ;; 8.5) FLOOR=8.5.12 ;;
+            *)   echo "::warning::PHP $MINOR has no patched release; php2shell refuses this image"
+                 echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0 ;;
+          esac
+          grep -q "$MINOR) echo \"$FLOOR\"" php2shell.sh \
+            || { echo "::error::floor for $MINOR disagrees with php2shell.sh"; exit 1; }
+          JSON="$(curl -fsS "https://www.php.net/releases/?json&version=$MINOR")"
+          VER="$(jq -r .version <<< "$JSON")"
+          SHA="$(jq -r --arg f "php-$VER.tar.xz" '.source[] | select(.filename==$f) | .sha256' <<< "$JSON")"
+          [ -n "$VER" ] && [ -n "$SHA" ] || { echo "::error::could not resolve $MINOR"; exit 1; }
+          printf 'version=%s\nsha256=%s\nskip=false\n' "$VER" "$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Build the patched image
+        if: steps.target.outputs.skip != 'true'
+        run: |
+          docker build \
+            --build-arg UISP_VERSION=${{ matrix.uisp }} \
+            --build-arg PHP_VERSION=${{ steps.target.outputs.version }} \
+            --build-arg PHP_SHA256=${{ steps.target.outputs.sha256 }} \
+            -t verify:${{ matrix.uisp }} .
+
+      # The guarantee this whole tool rests on: a patch-level PHP swap must not
+      # change the extension set. If Ubiquiti ever ships an image where it does,
+      # this is where we find out -- not a user.
+      - name: Assert parity with stock
+        if: steps.target.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          GOT="$(docker run --rm --entrypoint php verify:${{ matrix.uisp }} -r 'echo PHP_VERSION;')"
+          [ "$GOT" = "${{ steps.target.outputs.version }}" ] \
+            || { echo "::error::built $GOT, expected ${{ steps.target.outputs.version }}"; exit 1; }
+
+          docker run --rm --entrypoint php verify:${{ matrix.uisp }} -m | sort > built-modules.txt
+          diff stock-modules.txt built-modules.txt \
+            || { echo "::error::module set changed for ${{ matrix.uisp }}"; exit 1; }
+
+          STOCK_DIR="$(docker run --rm --entrypoint php ubnt/unms-crm:${{ matrix.uisp }} -r 'echo ini_get("extension_dir");')"
+          BUILT_DIR="$(docker run --rm --entrypoint php verify:${{ matrix.uisp }} -r 'echo ini_get("extension_dir");')"
+          [ "$STOCK_DIR" = "$BUILT_DIR" ] \
+            || { echo "::error::extension_dir moved: $STOCK_DIR -> $BUILT_DIR"; exit 1; }
+
+          docker run --rm --entrypoint php-fpm verify:${{ matrix.uisp }} -v
+          echo "::notice::${{ matrix.uisp }}: ${{ steps.stock.outputs.stock_php }} -> $GOT, modules identical"
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - run: bash -n php2shell.sh
+      - run: shellcheck -S warning php2shell.sh || true   # advisory, not gating

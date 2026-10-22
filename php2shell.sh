@@ -213,16 +213,31 @@ cmd_install() {
 
     local floor; floor="$(php_floor "$minor")"
     if [ -z "$floor" ]; then
-        bad "PHP $minor has no patched release."
-        say ""
-        say "  PHP $minor is end-of-life. For CVE-2026-109618/109619 the PHP project"
-        say "  published only a minimal SOURCE BACKPORT for 7.4, 8.0 and 8.1 -- there"
-        say "  is no release to build, and this tool does not apply patches."
-        say ""
-        say "  Building the latest $minor release would reproduce the SAME vulnerable"
-        say "  version and report success. Refusing instead."
-        say ""
-        say "  The remedy is a UISP version built on PHP 8.2 or newer."
+        # Two very different reasons land here, and telling an operator the
+        # wrong one wastes their time during an incident. Anything below 8.2 is
+        # end-of-life; anything above the newest minor we know about is simply
+        # newer than this tool.
+        if version_ge "8.2" "$minor" && [ "$minor" != "8.2" ]; then
+            bad "PHP $minor is end-of-life -- no patched release exists."
+            say ""
+            say "  For CVE-2026-109618/109619 the PHP project published only a minimal"
+            say "  SOURCE BACKPORT for 7.4, 8.0 and 8.1. There is no release to build,"
+            say "  and this tool does not apply patches."
+            say ""
+            say "  Building the latest $minor would reproduce the SAME vulnerable version"
+            say "  and report success. Refusing instead."
+            say ""
+            say "  The remedy is a UISP version built on PHP 8.2 or newer."
+        else
+            bad "PHP $minor is newer than this tool knows about."
+            say ""
+            say "  No fixed-version floor is recorded for $minor, so this tool cannot"
+            say "  tell whether a build would actually contain the fix. Refusing rather"
+            say "  than guessing."
+            say ""
+            say "  Check for a newer php2shell, or confirm by hand that UISP's PHP"
+            say "  already includes the CVE-2026-109618/109619 fix."
+        fi
         exit 2
     fi
 
