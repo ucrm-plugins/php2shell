@@ -132,13 +132,24 @@ Two things on the host, both reversible by `remove`:
 
 ```yaml
 # >>> php2shell >>>
+# Managed by php2shell. Do not edit by hand; re-run 'php2shell.sh install'.
+# Removing this block and recreating the container restores UISP's own image.
   ucrm:
     image: php2shell/unms-crm:4.6.13-php8.3.36
     build:
       context: ./php2shell
-      args: { UISP_VERSION: "4.6.13", PHP_VERSION: "8.3.36", PHP_SHA256: "..." }
+      args:
+        UISP_VERSION: "4.6.13"
+        PHP_VERSION: "8.3.36"
+        PHP_SHA256: "dd54693aa334c5c4d72e9aee96b082c2473750a18a6c1d105789c93a3b1692fd"
 # <<< php2shell <<<
 ```
+
+Block style rather than flow (`args: { ... }`) deliberately: both are valid YAML,
+but block diffs cleanly and avoids quoting edge cases in a generated file.
+`args` as a mapping needs Compose-spec parsing, which any UISP host already has —
+UISP's own `docker-compose.yml` carries no `version:` key, so it requires the
+same.
 
 `docker-compose.yml` is **never touched** — UISP regenerates it on update. If you
 already have an override it is backed up and merged, never overwritten, and the
