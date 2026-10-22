@@ -1,0 +1,7 @@
+# CLAUDE.md is the development notebook for this repo — the reasoning, the
+# UISP internals we had to verify, and the traps. It is deliberately NOT
+# published: consumers get README.md.
+CLAUDE.md
+
+*.log
+*.php2shell-bak-*
