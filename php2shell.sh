@@ -45,6 +45,44 @@ require_root() {
     [ "$(id -u)" -eq 0 ] || die "must run as root (try: sudo $0 $*)"
 }
 
+# Every subcommand -- including the read-only one -- needs to talk to Docker.
+#
+# The socket is root:docker 0660, so a plain user without docker-group
+# membership cannot use it. Checked up front and named plainly, because the
+# alternative is worse than a failure: without this, the docker calls return
+# empty, and `status` concludes "is the ucrm container running?" -- blaming the
+# container for what is actually a permissions problem.
+require_docker() {
+    command -v docker >/dev/null 2>&1 || die "docker is not installed, or not on PATH"
+
+    if docker info >/dev/null 2>&1; then
+        return 0
+    fi
+
+    if [ "$(id -u)" -eq 0 ]; then
+        die "cannot talk to the Docker daemon even as root -- is it running?"
+    fi
+
+    bad "cannot talk to the Docker daemon as $(id -un)"
+    say ""
+    say "  The socket is normally root:docker 0660, so this needs either:"
+    say "    sudo $0 ${1:-status}"
+    say "  or membership of the docker group:"
+    say "    sudo usermod -aG docker $(id -un)   # then log out and back in"
+    exit 1
+}
+
+# Readable-config check, separate from the Docker one so the message names the
+# actual obstacle. A stock UISP install may keep /home/unms tighter than the
+# host we developed against.
+require_readable() {
+    [ -r "$1/docker-compose.yml" ] && [ -r "$1/unms.conf" ] && return 0
+    bad "cannot read $1 as $(id -un)"
+    say "  UISP keeps its compose files under a restricted directory on some"
+    say "  installs. Re-run with sudo."
+    exit 1
+}
+
 # Locate the UISP install. unms.conf is the marker -- it is what unms-cli reads
 # and it sits beside the compose files.
 find_app_dir() {
@@ -192,7 +230,9 @@ compose_ok() {
 
 cmd_install() {
     require_root install
+    require_docker install
     local app; app="$(find_app_dir)" || die "no UISP install found (set UISP_APP_DIR=/path/to/app)"
+    require_readable "$app"
     head_ "php2shell install"
     say "UISP install   : $app"
 
@@ -307,7 +347,9 @@ cmd_install() {
 
 cmd_remove() {
     require_root remove
+    require_docker remove
     local app; app="$(find_app_dir)" || die "no UISP install found (set UISP_APP_DIR=/path/to/app)"
+    require_readable "$app"
     head_ "php2shell remove"
     say "UISP install   : $app"
 
@@ -339,7 +381,9 @@ cmd_remove() {
 }
 
 cmd_status() {
+    require_docker status
     local app; app="$(find_app_dir)" || die "no UISP install found (set UISP_APP_DIR=/path/to/app)"
+    require_readable "$app"
     local stock running running_php ov rc=0
     stock="$(stock_image "$app")"
     running="$(docker inspect ucrm --format '{{.Config.Image}}' 2>/dev/null || echo '(not running)')"

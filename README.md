@@ -4,14 +4,18 @@ Patches the PHP inside a **UISP** server against
 **CVE-2026-109618 / CVE-2026-109619** — unauthenticated remote code execution
 in PHP, CVSSv4 **9.2**, disclosed 21 October 2026.
 
-Every UISP install serves its web UI with PHP, so until Ubiquiti ships an image
-built on a fixed PHP, an internet-reachable UISP server is exploitable **without
-credentials**.
+UISP's **CRM** — the billing and client-management half, including the client
+zone — runs on PHP, in the `ucrm` container. The **NMS** side (devices, sites,
+topology) is Node.js and is not affected by this CVE.
+
+That still leaves the exposed half exposed: the CRM serves the admin UI and the
+client zone, and both are normally internet-reachable. Until Ubiquiti ships an
+image built on a fixed PHP, those are exploitable **without credentials**.
 
 ```bash
 git clone https://github.com/<org>/php2shell.git
 cd php2shell
-./php2shell.sh status      # am I affected?
+sudo ./php2shell.sh status      # am I affected?
 sudo ./php2shell.sh install
 ```
 
@@ -37,15 +41,21 @@ means that is every customer, not just admins.
 
 | | |
 |---|---|
-| `./php2shell.sh status` | What is running and whether it is patched. No root, changes nothing. |
+| `./php2shell.sh status` | What is running and whether it is patched. Changes nothing. |
 | `sudo ./php2shell.sh install` | Build the patched image and run UISP on it. Safe to re-run. |
 | `sudo ./php2shell.sh remove` | Restore UISP's own image. |
+
+All three need to talk to the Docker daemon, so run them as root **or** as a
+user in the `docker` group — `status` changes nothing either way, but it cannot
+read the container without that access. On some installs `/home/unms` is also
+restricted, in which case even `status` needs `sudo`. The script says which of
+the two is missing rather than guessing.
 
 `status` exits **0** patched, **1** stale, **2** vulnerable, so it works as a
 cron or monitoring check:
 
 ```bash
-*/30 * * * * /opt/php2shell/php2shell.sh status || logger -t php2shell "UISP PHP needs attention"
+*/30 * * * * root /opt/php2shell/php2shell.sh status || logger -t php2shell "UISP PHP needs attention"
 ```
 
 ## Re-run `install` after every UISP update
@@ -125,8 +135,11 @@ diff <(docker run --rm --entrypoint php ubnt/unms-crm:4.6.13 -m) \
 
 ## Requirements
 
-A UISP host with Docker and `docker compose`, root, and outbound HTTPS to
-php.net. The build compiles PHP and takes a few minutes.
+A UISP host with Docker and `docker compose`, and outbound HTTPS to php.net.
+
+`install` and `remove` need root. `status` needs root or `docker` group
+membership. The build compiles PHP and takes a few minutes; after that, a
+re-install on the same version is cached and near-instant.
 
 ## License
 
